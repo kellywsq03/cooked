@@ -37,20 +37,21 @@ llm = init_chat_model(
 search_tool = JinaSearch()
 
 @tool
-async def get_article(url: str) -> str:
+def get_article(url: str) -> str:
     """Search results only contain snippets of the recipe. You should read the full recipe.
     You can do this by visiting the webpage using the url. Read the article. If there are links in
     the article, you should visit those links using this tool as well.
     Args: 
-        url: First operand
+        url: One url to an article you are interested in reading. The url should only contain one 'www.'
     """
+    print(url[:50])
     jina_key = os.environ.get("JINA_API_KEY")
     new_link = f"https://r.jina.ai/{url}"
     headers = {
         "Authorization": f"Bearer {jina_key}"
     }
-    response = await requests.get(new_link, headers=headers)
-    print(response.text)
+    response = requests.get(new_link, headers=headers)
+    # print(response.text[:50])
     return response.text
 
 recipe_llm = init_chat_model(
@@ -82,17 +83,17 @@ def create_recipe(state: State):
     full_context = state["messages"] + [system_msg]
     response = structured_llm.invoke(full_context)
     print(response)
-    return response
+    return {"messages": [response]}
 
-tools = [search_tool, get_article, create_recipe]
+tools = [search_tool, get_article]
 llm_with_tools = llm.bind_tools(tools)
 
 def chatbot(state: State):
-    return {"messages": [llm.invoke(state["messages"])]}
+    return {"messages": [llm_with_tools.invoke(state["messages"])]}
 
 graph_builder.add_node("chatbot", chatbot)
 graph_builder.add_edge(START, "chatbot")
-tool_node = ToolNode(tools=[tool])
+tool_node = ToolNode(tools=tools)
 graph_builder.add_node("tools", tool_node)
 graph_builder.add_conditional_edges(
     "chatbot",
