@@ -82,7 +82,6 @@ def create_recipe(state: State):
     )
     full_context = state["messages"] + [system_msg]
     response = structured_llm.invoke(full_context)
-    print(response)
     return {"messages": [response]}
 
 tools = [search_tool, get_article]
@@ -106,16 +105,9 @@ def stream_graph_updates(user_input: str):
         for value in event.values():
             print("Assistant:", value["messages"][-1].content)
 
-while True:
-    try:
-        user_input = input("User: ")
-        if user_input.lower() in ["quit", "exit", "q"]:
-            print("Goodbye!")
-            break
-        stream_graph_updates(user_input)
-    except:
-        # fallback if input() is not available
-        user_input = "What do you know about LangGraph?"
-        print("User: " + user_input)
-        stream_graph_updates(user_input)
-        break
+recipe = "High protein meal"
+user_input = f"Give me the recipe for {recipe}"
+system_msg = "You are a helpful assistant who creates detailed, structured recipes. The user will ask you for a specific recipe." \
+"Your agentic workflow should utilise all the tools given in this order: search web -> visit url -> read article -> If the article does not have a detailed recipe, " \
+"visit relevant urls until you have a detailed recipe -> create a recipe using the create recipe tool in the structured output."
+stream_graph_updates(user_input + system_msg)
