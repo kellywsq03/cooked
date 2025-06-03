@@ -14,6 +14,7 @@ from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.memory import MemorySaver
 
 # Initialise LLM
 load_dotenv("keys.env")
@@ -23,6 +24,7 @@ if not os.environ.get("GOOGLE_API_KEY"):
 
 class State(TypedDict):
     messages: Annotated[list, add_messages]
+    ingredients: list
 
 
 graph_builder = StateGraph(State)
@@ -44,14 +46,12 @@ def get_article(url: str) -> str:
     Args: 
         url: One url to an article you are interested in reading. The url should only contain one 'www.'
     """
-    print(url[:50])
     jina_key = os.environ.get("JINA_API_KEY")
     new_link = f"https://r.jina.ai/{url}"
     headers = {
         "Authorization": f"Bearer {jina_key}"
     }
     response = requests.get(new_link, headers=headers)
-    # print(response.text[:50])
     return response.text
 
 recipe_llm = init_chat_model(
@@ -71,9 +71,11 @@ class Recipe(BaseModel):
 structured_llm = recipe_llm.with_structured_output(Recipe)
 
 @tool
-def create_recipe(state: State):
+def create_recipe(state: dict):
     """
     Creates a structured recipe. Utilises detailed recipes found on the web as references for the created recipe.
+    Args:
+        state: The entire message history stored in a State object.
     """
     system_msg = SystemMessage(
         "You are a helpful assistant that creates a recipe by closely referencing the online recipes provided, "
@@ -84,7 +86,7 @@ def create_recipe(state: State):
     response = structured_llm.invoke(full_context)
     return {"messages": [response]}
 
-tools = [search_tool, get_article]
+tools = [search_tool, get_article, create_recipe]
 llm_with_tools = llm.bind_tools(tools)
 
 def chatbot(state: State):
@@ -99,15 +101,24 @@ graph_builder.add_conditional_edges(
     tools_condition,
 )
 graph_builder.add_edge("tools", "chatbot")
-graph = graph_builder.compile()
+memory = MemorySaver()
+graph = graph_builder.compile(checkpointer=memory)
 def stream_graph_updates(user_input: str):
-    for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}):
-        for value in event.values():
-            print("Assistant:", value["messages"][-1].content)
+    config = {"configurable": {"thread_id": "1"}}
+    graph.update_state(config, {"ingredients": '[500g of chicken breast, 1 head of broccoli, 1 can of chickpeas]'})
+    for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}, config, stream_mode="values"):
+        snapshot = graph.get_state(config)
+        print({k: v for k, v in snapshot.values.items() if k in ("ingredients")})
+        event["messages"][-1].pretty_print()
+        # for value in event.values():
+        #     print("Assistant:", value["messages"][-1].content)  
+    
 
 recipe = "High protein meal"
 user_input = f"Give me the recipe for {recipe}"
-system_msg = "You are a helpful assistant who creates detailed, structured recipes. The user will ask you for a specific recipe." \
-"Your agentic workflow should utilise all the tools given in this order: search web -> visit url -> read article -> If the article does not have a detailed recipe, " \
-"visit relevant urls until you have a detailed recipe -> create a recipe using the create recipe tool in the structured output."
-stream_graph_updates(user_input + system_msg)
+system_msg = "You are a helpful assistant who creates detailed, structured recipes. The user will ask you for a specific recipe. " \
+"Your agentic workflow should utilise all the tools given in this order: search web -> visit url -> read article -> create recipe. " \
+"In the read article step: 1. If the article does not have a detailed recipe, visit relevant urls until you have a detailed recipe. " \
+"2. If the recipe does not contain the user's ingredients, search for more detailed recipes. " \
+"Once the obtained recipe is detailed and contains the user's ingredients, create a recipe using the create recipe tool in the structured output."
+stream_graph_updates(system_msg + user_input)
