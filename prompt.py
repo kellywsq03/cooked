@@ -1,15 +1,13 @@
 import os
 import getpass
 import requests
-from google import genai
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
-from langchain_core.tools import Tool, tool
+from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
-from langchain_google_community import GoogleSearchAPIWrapper
 from langchain_community.tools import JinaSearch
 from pydantic import BaseModel, Field
-from typing import Annotated, Literal
+from typing import Annotated, Literal, List
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -143,7 +141,7 @@ class Recipe(BaseModel):
     ingredients: str = Field(..., description="A detailed description of the required ingredients. Provide the required quantities of each ingredient, in UK measurements such as kg and ml.")
     instructions: str = Field(..., description="Provide detailed instructions that are easy to follow by users regardless of their culinary background. When using heat, specify if the heat is low, medium or high. Illustrate with words how each step should be carried out."\
                               "Each step should begin with an integer followed by a period, indicating the step number.")
-    url: str = Field(..., description="Referenced urls in the creation of the recipe. Concatanate with commas")
+    url: List[str] = Field(..., description="Referenced urls in the creation of the recipe.")
 
 structured_llm = recipe_llm.with_structured_output(Recipe)
 
@@ -225,12 +223,13 @@ graph_builder.add_conditional_edges("recipe evaluator",
 graph_builder.add_edge("create recipe", "recipe evaluator")
 graph = graph_builder.compile()
 
-try:
-    with open("graph.png", "wb") as f:
-        f.write(graph.get_graph().draw_mermaid_png())
-except Exception:
-    print("exception")
-    pass
+# try:
+#     with open("graph.png", "wb") as f:
+#         f.write(graph.get_graph().draw_mermaid_png())
+# except Exception:
+#     print("exception")
+#     pass
+
 def stream_graph_updates(user_input: str):
     for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}):
         if "messages" in event:
@@ -239,7 +238,16 @@ def stream_graph_updates(user_input: str):
             # for value in event.values():
             #     print("Assistant:", value["messages"][-1].content)  
     
+def get_recipe(recipe: str):
+    user_input = f"Give me the recipe for {recipe}"
+    final_state = graph.invoke({
+        "messages": [{"role": "user", "content": user_input}]
+    })
 
-recipe = input("recipe: ")
-user_input = f"Give me the recipe for {recipe}"
-stream_graph_updates(user_input)
+    return final_state.get("final_recipe", "no recipe found.")
+
+# recipe = input("recipe: ")
+
+# if __name__ == "__main__":
+#     r = input("Key in recipe: ")
+#     print(get_recipe(r))
