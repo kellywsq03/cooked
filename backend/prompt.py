@@ -14,11 +14,18 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
+import asyncio
 
 file = open("output.txt", "w")
 
-# Initialise LLM
-load_dotenv("keys.env")
+# Get the directory where this script resides
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Construct full path to keys.env
+env_path = os.path.join(script_dir, "keys.env")
+
+# Load the .env file from that path
+load_dotenv(env_path)
 
 if not os.environ.get("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter API key for Google Gemini: ")
@@ -29,8 +36,6 @@ class State(TypedDict):
     feedback: str
     satisfactory: str
     final_recipe: dict
-
-graph_builder = StateGraph(State)
 
 llm = init_chat_model(
     model="gemini-2.0-flash", 
@@ -55,26 +60,15 @@ def get_article(url: str) -> str:
     response = requests.get(new_link, headers=headers)
     return response.text
 
-@tool
-def human_assistance(query: str) -> str:
-    """Request assistance from a human.
-    Args:
-        query: A question you would like to ask the user.
-    """
-    # human_response = interrupt({"query": query})
-    return {"messages": ["I don't have any preference. Anything will do."]}
-
-research_tools = [search_tool, get_article, human_assistance]
+research_tools = [search_tool, get_article]
 research_llm = llm.bind_tools(research_tools)
 
 def research(state: State):
     print("Researching... ")
-    system_msg = "You are a helpful assistant that will search the web for recipes using the jina_search tool. " \
-        "Use relevant search queries to search for recipes using the jina_search tool. " \
-        "After using the search tool, you may read the full recipe by visiting the webpage using the url." \
-        "You can read the article using the get_article tool. If there are links in" \
-        "the article, you can visit those links using the get_article tool as well." \
-        "If you need to ask the user questions, use the human_assistance tool."
+    system_msg = "You are a helpful assistant that will search the web for recipes using the tools provided. " \
+        "Use relevant search queries to search for recipes using the search tool. " \
+        "After using the search tool, you may read the full recipe by visiting the webpage using the url. " \
+        "If there are links in the article, you can visit those links as well. "
     if state.get("feedback"):
         print("Feedback: " + state["feedback"])
         result = research_llm.invoke(state["messages"] + [SystemMessage(system_msg), HumanMessage("Take into account this feedback: " + state["feedback"])])
@@ -86,8 +80,8 @@ def research(state: State):
 
 class Feedback(BaseModel):
     grade: Literal["Sufficient", "Insufficient"] = Field(
-        description="Decide if the current recipes are sufficient. The recipes are sufficient if they contain detailed measurements and quantities of ingredients "\
-            "and specific instructions on how to cook the food at each step."
+        description="Decide if the current researched recipes are sufficient. The recipes are sufficient if they contain detailed " \
+        "measurements and quantities of ingredients and specific instructions on how to cook the food at each step."
     )
     feedback: str = Field(
         description="If the recipes are insufficient, suggest what search queries to use.",
@@ -111,10 +105,8 @@ def tools_router(state: State):
 def research_evaluator(state: State):
     print("evaluating...")
     system_msg = "You are a helpful assistant that will evaluate if the current recipes provide sufficient information to help another " \
-        "large language model to create a recipe that fulfills the user's requirements. "\
-        "The recipe should be detailed, containing measurements and descriptions of the food at each instruction step whereever possible."\
-        "If the other large language model has asked you for preference, provide feedback that you have no preference. Do not suggest that the "\
-        "large language model needs more information from the user."
+        "large language model to create a recipe. The recipe should be detailed, containing measurements and descriptions of the food at each instruction step " \
+        "whereever possible."
     evaluator_llm = llm.with_structured_output(Feedback)
     result = evaluator_llm.invoke(state["messages"] + [SystemMessage(system_msg)])
     print(result, file=file)
@@ -198,30 +190,33 @@ def creation_router(state: State):
     print(state["satisfactory"] + "!")
     return state["satisfactory"]
 
-graph_builder.add_node("research", research)
-graph_builder.add_edge(START, "research")
-tool_node = ToolNode(tools=research_tools)
-graph_builder.add_node("research tools", tool_node)
-graph_builder.add_node("research evaluator", research_evaluator)
-graph_builder.add_conditional_edges(
-    "research",
-    tools_router,
-    {"research tools": "research tools",
-     "research evaluator": "research evaluator"}
-)
-graph_builder.add_edge("research tools", "research")
-graph_builder.add_node("create recipe",  create_recipe)
-graph_builder.add_conditional_edges("research evaluator", 
-                                    route_research,
-                                    {"Sufficient": "create recipe",
-                                     "Insufficient": "research"})
-graph_builder.add_node("recipe evaluator", recipe_evaluator)
-graph_builder.add_conditional_edges("recipe evaluator",
-                                    creation_router,
-                                    {"satisfactory": END,
-                                     "unsatisfactory": "create recipe"})
-graph_builder.add_edge("create recipe", "recipe evaluator")
-graph = graph_builder.compile()
+def build_recipe_graph():
+    graph_builder = StateGraph(State)
+    graph_builder.add_node("research", research)
+    graph_builder.add_edge(START, "research")
+    tool_node = ToolNode(tools=research_tools)
+    graph_builder.add_node("research tools", tool_node)
+    graph_builder.add_node("research evaluator", research_evaluator)
+    graph_builder.add_conditional_edges(
+        "research",
+        tools_router,
+        {"research tools": "research tools",
+        "research evaluator": "research evaluator"}
+    )
+    graph_builder.add_edge("research tools", "research")
+    graph_builder.add_node("create recipe",  create_recipe)
+    graph_builder.add_conditional_edges("research evaluator", 
+                                        route_research,
+                                        {"Sufficient": "create recipe",
+                                        "Insufficient": "research"})
+    graph_builder.add_node("recipe evaluator", recipe_evaluator)
+    graph_builder.add_conditional_edges("recipe evaluator",
+                                        creation_router,
+                                        {"satisfactory": END,
+                                        "unsatisfactory": "create recipe"})
+    graph_builder.add_edge("create recipe", "recipe evaluator")
+    graph = graph_builder.compile()
+    return graph
 
 # try:
 #     with open("graph.png", "wb") as f:
@@ -231,6 +226,7 @@ graph = graph_builder.compile()
 #     pass
 
 def stream_graph_updates(user_input: str):
+    graph = build_recipe_graph()
     for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}):
         if "messages" in event:
             # print(event["messages"])
@@ -238,16 +234,20 @@ def stream_graph_updates(user_input: str):
             # for value in event.values():
             #     print("Assistant:", value["messages"][-1].content)  
     
-def get_recipe(recipe: str):
-    user_input = f"Give me the recipe for {recipe}"
-    final_state = graph.invoke({
-        "messages": [{"role": "user", "content": user_input}]
-    })
-
-    return final_state.get("final_recipe", "no recipe found.")
+async def get_recipe(recipe: str):
+    try:
+        graph = build_recipe_graph()
+        user_input = f"Give me the recipe for {recipe}"
+        final_state = await graph.ainvoke({
+            "messages": [{"role": "user", "content": user_input}]
+        })
+        return final_state.get("final_recipe", "no recipe found.")
+    except:
+        return Recipe(title="dummy", serving_size=0, prep_time=0, cook_time=0, ingredients="dummy", instructions="dummy", url=[])
 
 # recipe = input("recipe: ")
 
-# if __name__ == "__main__":
-#     r = input("Key in recipe: ")
-#     print(get_recipe(r))
+if __name__ == "__main__":
+    r = input("Key in recipe: ")
+    result = asyncio.run(get_recipe(r))
+    print(result)
