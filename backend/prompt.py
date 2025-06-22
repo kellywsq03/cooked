@@ -15,18 +15,13 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 import asyncio
+import time
 
-file = open("output.txt", "w")
-
-# Get the directory where this script resides
 script_dir = os.path.dirname(os.path.abspath(__file__))
-
-# Construct full path to keys.env
 env_path = os.path.join(script_dir, "keys.env")
-
-# Load the .env file from that path
+write_path = os.path.join(script_dir, "/output.txt")
+file = open(write_path, "w")
 load_dotenv(env_path)
-
 if not os.environ.get("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter API key for Google Gemini: ")
 
@@ -234,20 +229,24 @@ def stream_graph_updates(user_input: str):
             # for value in event.values():
             #     print("Assistant:", value["messages"][-1].content)  
     
-async def get_recipe(recipe: str):
-    try:
-        graph = build_recipe_graph()
-        user_input = f"Give me the recipe for {recipe}"
-        final_state = await graph.ainvoke({
-            "messages": [{"role": "user", "content": user_input}]
-        })
-        return final_state.get("final_recipe", "no recipe found.")
-    except:
-        return Recipe(title="dummy", serving_size=0, prep_time=0, cook_time=0, ingredients="dummy", instructions="dummy", url=[])
+def get_recipe(recipe: str) -> Recipe:
+    retries = 2
+    delay = 3
+    for attempt in range(retries):
+        try:
+            graph = build_recipe_graph()
+            user_input = f"Give me the recipe for {recipe}"
+            final_state = graph.invoke({
+                "messages": [{"role": "user", "content": user_input}]
+            })
+            return final_state.get("final_recipe", "no recipe found.")
+        except:
+            time.sleep(delay)
+    return Recipe(title="dummy", serving_size=0, prep_time=0, cook_time=0, ingredients="dummy", instructions="dummy", url=[])
 
 # recipe = input("recipe: ")
 
 if __name__ == "__main__":
     r = input("Key in recipe: ")
-    result = asyncio.run(get_recipe(r))
+    result = get_recipe(r)
     print(result)

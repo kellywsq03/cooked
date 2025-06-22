@@ -10,6 +10,7 @@ from prompt import get_recipe
 from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
 import asyncio
 from langgraph.graph import StateGraph, START, END
+from prompt import Recipe
 
 # Get the directory where this script resides
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -40,16 +41,6 @@ sample_user_profile = UserProfile(
     goals="high protein diet"
 )
 
-class Recipe(BaseModel):
-    title: str = Field(..., description="The title of the recipe. This title describes briefly what food the user will make by following the recipe.")
-    serving_size: int = Field(..., description="The number of people that the cooked meal can feed.")
-    prep_time: int = Field(..., description="The amount of time, in minutes, required to prepare the ingredients before cooking this meal. This includes but is not limited to time spent peeling, chopping and washing ingredients.")
-    cook_time: int = Field(..., description="The amount of time, in minutes, required to cook this meal. This is the total amount of time to follow the instructions given in the recipe, subtracted by the prep_time")
-    ingredients: str = Field(..., description="A detailed description of the required ingredients. Provide the required quantities of each ingredient, in UK measurements such as kg and ml.")
-    instructions: str = Field(..., description="Provide detailed instructions that are easy to follow by users regardless of their culinary background. When using heat, specify if the heat is low, medium or high. Illustrate with words how each step should be carried out."\
-                              "Each step should begin with an integer followed by a period, indicating the step number.")
-    url: List[str] = Field(..., description="Referenced urls in the creation of the recipe.")
-
 class MealPlan(BaseModel):
     Monday: Recipe
     Tuesday: Recipe
@@ -64,7 +55,7 @@ DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sun
 class State(TypedDict):
     messages: Annotated[list, add_messages]
     user_profile: UserProfile
-    meal_plan: MealPlan
+    meal_plan: dict
 
 llm = init_chat_model(
     model="gemini-2.0-flash", 
@@ -75,7 +66,7 @@ llm = init_chat_model(
 class DraftMealPlan(BaseModel):
     meals: list[str] = Field(..., description="A list of names for meal ideas for each day of the week.")
 
-async def GenerateInitialMealPlan(state: State):
+def GenerateInitialMealPlan(state: State):
     system_msg = "You are a helpful assistant that will generate meal ideas. "\
         "Take into account the user's preferences."
     
@@ -86,13 +77,28 @@ async def GenerateInitialMealPlan(state: State):
                                 f"- dislikes: {", ".join(sample_user_profile.dislikes)}"\
                                 f"- cooking skill: {sample_user_profile.cooking_skill}"\
                                 f"- goals: {sample_user_profile.goals}")])
+    print(result.meals)
+    # recipes = [get_recipe(meal) for meal in result.meals]
+    dummy_recipe = Recipe(title="dummy", serving_size=0, prep_time=0, cook_time=0, ingredients="dummy", 
+                          instructions="dummy", url=[])
     
-    recipes = await asyncio.gather(*[get_recipe(meal) for meal in result.meals])
+    recipes = [get_recipe(result.meals[0]),
+               dummy_recipe, 
+               dummy_recipe, 
+               dummy_recipe, 
+               dummy_recipe,
+               dummy_recipe,
+               dummy_recipe]
 
-    # Zip with days of the week
-    meal_plan_dict = {day: recipe for day, recipe in zip(DAYS, recipes)}
+    meal_plan = MealPlan(Monday=recipes[0],
+                         Tuesday=recipes[1],
+                         Wednesday=recipes[2],
+                         Thursday=recipes[3],
+                         Friday=recipes[4],
+                         Saturday=recipes[5],
+                         Sunday=recipes[6])
 
-    return {"meal_plan": MealPlan(**meal_plan_dict)}
+    return {"meal_plan": meal_plan}
 
 graph_builder = StateGraph(State)
 graph_builder.add_node("generate", GenerateInitialMealPlan)
@@ -101,8 +107,8 @@ graph_builder.add_edge("generate", END)
 graph = graph_builder.compile()
 
 if __name__ == "__main__":
-    final_state = asyncio.run(graph.ainvoke({
+    final_state = graph.invoke({
         "messages": [{"role": "user", "content": "Generate a weekly meal plan."}]
-    }))
+    })
 
     print(final_state["meal_plan"])
