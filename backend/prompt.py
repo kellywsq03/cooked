@@ -15,12 +15,14 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 import asyncio
-import time
+import time, json
+from langchain_tavily import TavilySearch
+from helper import UserProfile, sample_user_profile
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(script_dir, "keys.env")
-write_path = os.path.join(script_dir, "/output.txt")
-file = open(write_path, "w")
+write_path = os.path.join(script_dir, "output.txt")
+write_file = open(write_path, "w")
 load_dotenv(env_path)
 if not os.environ.get("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter API key for Google Gemini: ")
@@ -31,6 +33,7 @@ class State(TypedDict):
     feedback: str
     satisfactory: str
     final_recipe: dict
+    user_profile: UserProfile
 
 llm = init_chat_model(
     model="gemini-2.0-flash", 
@@ -38,40 +41,30 @@ llm = init_chat_model(
     temperature="0.2"
 )
 
-search_tool = JinaSearch()
-
-@tool
-def get_article(url: str) -> str:
-    """Read the full recipe by visiting the webpage using the url.
-    Args: 
-        url: One url to an article you are interested in reading.
-    """
-    print("getting article...")
-    jina_key = os.environ.get("JINA_API_KEY")
-    new_link = f"https://r.jina.ai/{url}"
-    headers = {
-        "Authorization": f"Bearer {jina_key}"
-    }
-    response = requests.get(new_link, headers=headers)
-    return response.text
-
-research_tools = [search_tool, get_article]
-research_llm = llm.bind_tools(research_tools)
+class Links(BaseModel):
+    queries: List[str] = Field(..., description="A list of search queries for a search engine.")
 
 def research(state: State):
     print("Researching... ")
-    system_msg = "You are a helpful assistant that will search the web for recipes using the tools provided. " \
-        "Use relevant search queries to search for recipes using the search tool. " \
-        "After using the search tool, you may read the full recipe by visiting the webpage using the url. " \
-        "If there are links in the article, you can visit those links as well. "
+    system_msg = "You are a helpful assistant that will come up with relevant search queries " \
+        "for a search engine. These search queries must be for recipes that another llm " \
+        "will reference in the creation of a recipe that meets the user's needs. "
+    research_llm = llm.with_structured_output(Links)
     if state.get("feedback"):
-        print("Feedback: " + state["feedback"])
-        result = research_llm.invoke(state["messages"] + [SystemMessage(system_msg), HumanMessage("Take into account this feedback: " + state["feedback"])])
+        print(state["feedback"])
+        result = research_llm.invoke(state["messages"] + [SystemMessage(system_msg), HumanMessage(state.get("feedback"))])
     else:
-        print("Researching without feedback...")
         result = research_llm.invoke(state["messages"] + [SystemMessage(system_msg)])
-    print(result)
-    return {"messages": [result]}
+    search_tool = TavilySearch(max_results=3)
+    search_results = []
+    print(result.queries)
+    print(result.queries, file=write_file)
+    for q in result.queries:
+        search_result = search_tool.invoke({"query": q})
+        search_results.append(search_result)
+    print("done searching!")
+    print(search_results, file=write_file)
+    return {"messages": search_results}
 
 class Feedback(BaseModel):
     grade: Literal["Sufficient", "Insufficient"] = Field(
@@ -81,30 +74,16 @@ class Feedback(BaseModel):
     feedback: str = Field(
         description="If the recipes are insufficient, suggest what search queries to use.",
     )
-
-def tools_router(state: State):
-    """
-    Use in the conditional_edge to route to the ToolNode if the last message
-    has tool calls. Otherwise, route to the recipe evaluator node.
-    """
-    if isinstance(state, list):
-        ai_message = state[-1]
-    elif messages := state.get("messages", []):
-        ai_message = messages[-1]
-    else:
-        raise ValueError(f"No messages found in input state to tool_edge: {state}")
-    if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
-        return "research tools"
-    return "research evaluator"
+    # urls: list[str] = Field(..., description="A list of urls to visit.")
 
 def research_evaluator(state: State):
     print("evaluating...")
     system_msg = "You are a helpful assistant that will evaluate if the current recipes provide sufficient information to help another " \
-        "large language model to create a recipe. The recipe should be detailed, containing measurements and descriptions of the food at each instruction step " \
-        "whereever possible."
+        "large language model to create a recipe. The recipe should be detailed, containing measurements and descriptions of the food " \
+        "at each instruction step whereever possible. "
     evaluator_llm = llm.with_structured_output(Feedback)
     result = evaluator_llm.invoke(state["messages"] + [SystemMessage(system_msg)])
-    print(result, file=file)
+    print(result, file=write_file)
     return {"sufficient_info": result.grade,
             "feedback": result.feedback}
 
@@ -144,12 +123,12 @@ def create_recipe(state: State):
         "using your creativity whenever necessary to fit user requirements. You will maintain as much detail as possible "
         "regarding how the user should handle the food. Include weight, time or size quantities as much as possible."
     )
-    if state.get("satisfactory"):
+    if state.get("feedback"):
         full_context = state["messages"] + [system_msg] + [HumanMessage(f"Take into account this feedback: {state["feedback"]}")]
     else:
         full_context = state["messages"] + [system_msg]
     response = structured_llm.invoke(full_context)
-    print(state["messages"] + [response], file=file)
+    print(state["messages"] + [response], file=write_file)
     return {"final_recipe": response}
 
 class RecipeFeedback(BaseModel):
@@ -168,14 +147,17 @@ def recipe_evaluator(state: State):
     print("evaluating recipe...")
     system_msg = SystemMessage(
         "You are a helpful assistant that evaluates if the current recipe is satisfactory. A recipe is satisfactory if it: "\
-        "1. Fits user's requirements "\
+        "1. Avoids user's allergies "\
         "2. Is detailed about the quantities and measurements of ingredients "\
-        "3. Is detailed in the instructions on how to prepare the food."
+        "3. Is detailed in the instructions on how to prepare the food."\
+        "4. Meets the user's nutritional needs"
     )
-    input = f"The current recipe is {state["final_recipe"]}"
+    input = f"The current recipe is {state["final_recipe"]}"\
+        f"The user's allergies are {','.join(state["user_profile"].allergies)}"\
+        f"The user's nutritional needs are {','.join(state["user_profile"].nutrition)}"
     evaluator_llm = llm.with_structured_output(RecipeFeedback)
     response = evaluator_llm.invoke([system_msg, HumanMessage(input)])
-    print(response, file=file)
+    print(response, file=write_file)
     return {"satisfactory": response.grade,
             "feedback": response.feedback}
 
@@ -185,20 +167,52 @@ def creation_router(state: State):
     print(state["satisfactory"] + "!")
     return state["satisfactory"]
 
+@tool
+def get_nutrition(query: str) -> str:
+    print("getting nutrition...")
+    app_id = os.environ.get("NUTRITIONIX_ID")
+    app_key = os.environ.get("NUTRITIONIX_KEY")
+    headers =  {
+        'Content-Type': 'application/json',
+        'x-app-id': app_id,
+        'x-app-key': app_key 
+    }
+
+    body = {
+        "query": query
+    }
+
+    response = requests.post(url='https://trackapi.nutritionix.com/v2/natural/nutrients', 
+                             headers=headers,
+                             json=body)
+    
+    data = response.json()
+    relevant_data = [
+        {
+            "food_name": food.get("food_name"),
+            "calories": food.get("nf_calories"),
+            "total_fat": food.get("nf_total_fat"),
+            "protein": food.get("nf_protein")
+        }
+        for food in data["foods"]
+    ]
+    parsed_data = [json.dumps(d) for d in relevant_data]
+    parsed_data = ', '.join(parsed_data)
+    return parsed_data
+
+def nutrition_evaluator(state: State):
+    """Evaluates if the meal's nutrition is sufficient."""
+    recipe = state.get("final_recipe")
+    ingredients = recipe.ingredients
+    nutrition = get_nutrition(ingredients)
+    nutrition_msg = ""
+
 def build_recipe_graph():
     graph_builder = StateGraph(State)
     graph_builder.add_node("research", research)
     graph_builder.add_edge(START, "research")
-    tool_node = ToolNode(tools=research_tools)
-    graph_builder.add_node("research tools", tool_node)
     graph_builder.add_node("research evaluator", research_evaluator)
-    graph_builder.add_conditional_edges(
-        "research",
-        tools_router,
-        {"research tools": "research tools",
-        "research evaluator": "research evaluator"}
-    )
-    graph_builder.add_edge("research tools", "research")
+    graph_builder.add_edge("research", "research evaluator")
     graph_builder.add_node("create recipe",  create_recipe)
     graph_builder.add_conditional_edges("research evaluator", 
                                         route_research,
@@ -211,14 +225,14 @@ def build_recipe_graph():
                                         "unsatisfactory": "create recipe"})
     graph_builder.add_edge("create recipe", "recipe evaluator")
     graph = graph_builder.compile()
+    # try:
+    #     with open("graph.png", "wb") as f:
+    #         f.write(graph.get_graph().draw_mermaid_png())
+    # except Exception:
+    #     print("exception")
+    #     pass
     return graph
 
-# try:
-#     with open("graph.png", "wb") as f:
-#         f.write(graph.get_graph().draw_mermaid_png())
-# except Exception:
-#     print("exception")
-#     pass
 
 def stream_graph_updates(user_input: str):
     graph = build_recipe_graph()
@@ -233,20 +247,25 @@ def get_recipe(recipe: str) -> Recipe:
     retries = 2
     delay = 3
     for attempt in range(retries):
+        print(f"this is attempt {attempt}")
         try:
             graph = build_recipe_graph()
             user_input = f"Give me the recipe for {recipe}"
             final_state = graph.invoke({
-                "messages": [{"role": "user", "content": user_input}]
+                "messages": [{"role": "user", "content": user_input}],
+                "user_profile": sample_user_profile
             })
             return final_state.get("final_recipe", "no recipe found.")
-        except:
+        except Exception as e:
+            print(e)
             time.sleep(delay)
     return Recipe(title="dummy", serving_size=0, prep_time=0, cook_time=0, ingredients="dummy", instructions="dummy", url=[])
 
 # recipe = input("recipe: ")
 
 if __name__ == "__main__":
-    r = input("Key in recipe: ")
-    result = get_recipe(r)
+    # r = input("Key in recipe: ")
+    # result = get_recipe(r)
+    # print(result)
+    result = get_nutrition("100g of steak")
     print(result)
