@@ -34,6 +34,9 @@ class State(TypedDict):
     satisfactory: str
     final_recipe: dict
     user_profile: UserProfile
+    search_results: dict
+    loop_count: int = 0
+    urls: list
 
 llm = init_chat_model(
     model="gemini-2.0-flash", 
@@ -52,23 +55,33 @@ def research(state: State):
     research_llm = llm.with_structured_output(Links)
     if state.get("feedback"):
         print(state["feedback"])
-        result = research_llm.invoke(state["messages"] + [SystemMessage(system_msg), HumanMessage(state.get("feedback"))])
+        result = research_llm.invoke(state["messages"] + 
+                                     [SystemMessage(system_msg), 
+                                      HumanMessage(state.get("feedback"))])
     else:
         result = research_llm.invoke(state["messages"] + [SystemMessage(system_msg)])
     search_tool = TavilySearch(max_results=3)
     search_results = []
-    print(result.queries)
+    acc_urls = []
+    print("query result: ", file=write_file)
     print(result.queries, file=write_file)
     for q in result.queries:
         search_result = search_tool.invoke({"query": q})
+        acc_urls.append(search_result["results"][0]["url"])
         search_results.append(search_result)
+    print("urls", state["urls"])
+    print("acc urls", acc_urls)
     print("done searching!")
+    print("search_results", search_results[0]["results"][0])
+    print("search results", file=write_file)
     print(search_results, file=write_file)
-    return {"messages": search_results}
+    acc_urls.extend(state["urls"])
+    return {"search_results": search_results[0]["results"][0],
+            "urls": acc_urls}
 
 class Feedback(BaseModel):
     grade: Literal["Sufficient", "Insufficient"] = Field(
-        description="Decide if the current researched recipes are sufficient. The recipes are sufficient if they contain detailed " \
+        description="Decide if the current researched recipes are sufficient. The recipes are sufficient if they contain " \
         "measurements and quantities of ingredients and specific instructions on how to cook the food at each step."
     )
     feedback: str = Field(
@@ -78,14 +91,26 @@ class Feedback(BaseModel):
 
 def research_evaluator(state: State):
     print("evaluating...")
+    if state["loop_count"] > 2:
+        state["loop_count"] = 0
+        return {"sufficient_info": "Sufficient",
+            "feedback": ""}
     system_msg = "You are a helpful assistant that will evaluate if the current recipes provide sufficient information to help another " \
         "large language model to create a recipe. The recipe should be detailed, containing measurements and descriptions of the food " \
         "at each instruction step whereever possible. "
     evaluator_llm = llm.with_structured_output(Feedback)
-    result = evaluator_llm.invoke(state["messages"] + [SystemMessage(system_msg)])
+    search_results_message = SystemMessage(
+        content=f"Here are the search results: {json.dumps(state["search_results"], indent=2)}")
+    print("Search_results_message: ", search_results_message)
+    print("search results message: ", file=write_file)
+    print(search_results_message, file=write_file)
+    result = evaluator_llm.invoke(state["messages"] + [search_results_message] + 
+                                  [SystemMessage(system_msg)])
+    print("result", file=write_file)
     print(result, file=write_file)
     return {"sufficient_info": result.grade,
-            "feedback": result.feedback}
+            "feedback": result.feedback,
+            "loop_count": 0 if result.grade == "Sufficient" else state["loop_count"] + 1}
 
 def route_research(state: State):
     """Route back to research agent or to summarise agent based on the feedback from the evaluator."""
@@ -121,13 +146,15 @@ def create_recipe(state: State):
     system_msg = SystemMessage(
         "You are a helpful assistant that creates a recipe by closely referencing the online recipes provided, "
         "using your creativity whenever necessary to fit user requirements. You will maintain as much detail as possible "
-        "regarding how the user should handle the food. Include weight, time or size quantities as much as possible."
+        "regarding how the user should handle the food. Include weight, time or size quantities as much as possible." \
+        "In the referenced context, extract the urls."
     )
     if state.get("feedback"):
         full_context = state["messages"] + [system_msg] + [HumanMessage(f"Take into account this feedback: {state["feedback"]}")]
     else:
         full_context = state["messages"] + [system_msg]
     response = structured_llm.invoke(full_context)
+    print("Recipe resopnse: ", response)
     print(state["messages"] + [response], file=write_file)
     return {"final_recipe": response}
 
@@ -145,6 +172,10 @@ def recipe_evaluator(state: State):
     3. Is detailed in the instructions on how to prepare the food.
     """
     print("evaluating recipe...")
+    if state["loop_count"] > 2:
+        state["loop_count"] = 0
+        return {"satisfactory": "satisfactory",
+            "feedback": ""}
     system_msg = SystemMessage(
         "You are a helpful assistant that evaluates if the current recipe is satisfactory. A recipe is satisfactory if it: "\
         "1. Avoids user's allergies "\
@@ -159,53 +190,14 @@ def recipe_evaluator(state: State):
     response = evaluator_llm.invoke([system_msg, HumanMessage(input)])
     print(response, file=write_file)
     return {"satisfactory": response.grade,
-            "feedback": response.feedback}
+            "feedback": response.feedback,
+            "loop_count": 0 if response.grade == "satisfactory" else state["loop_count"] + 1}
 
 def creation_router(state: State):
     """Route back to creation agent or to end based on the feedback from the evaluator."""
     print("Routing from creation evaluator...")
     print(state["satisfactory"] + "!")
     return state["satisfactory"]
-
-@tool
-def get_nutrition(query: str) -> str:
-    print("getting nutrition...")
-    app_id = os.environ.get("NUTRITIONIX_ID")
-    app_key = os.environ.get("NUTRITIONIX_KEY")
-    headers =  {
-        'Content-Type': 'application/json',
-        'x-app-id': app_id,
-        'x-app-key': app_key 
-    }
-
-    body = {
-        "query": query
-    }
-
-    response = requests.post(url='https://trackapi.nutritionix.com/v2/natural/nutrients', 
-                             headers=headers,
-                             json=body)
-    
-    data = response.json()
-    relevant_data = [
-        {
-            "food_name": food.get("food_name"),
-            "calories": food.get("nf_calories"),
-            "total_fat": food.get("nf_total_fat"),
-            "protein": food.get("nf_protein")
-        }
-        for food in data["foods"]
-    ]
-    parsed_data = [json.dumps(d) for d in relevant_data]
-    parsed_data = ', '.join(parsed_data)
-    return parsed_data
-
-def nutrition_evaluator(state: State):
-    """Evaluates if the meal's nutrition is sufficient."""
-    recipe = state.get("final_recipe")
-    ingredients = recipe.ingredients
-    nutrition = get_nutrition(ingredients)
-    nutrition_msg = ""
 
 def build_recipe_graph():
     graph_builder = StateGraph(State)
@@ -253,19 +245,19 @@ def get_recipe(recipe: str) -> Recipe:
             user_input = f"Give me the recipe for {recipe}"
             final_state = graph.invoke({
                 "messages": [{"role": "user", "content": user_input}],
-                "user_profile": sample_user_profile
+                "user_profile": sample_user_profile,
+                "loop_count": 0,
+                "urls": []
             })
+            print("final urls", final_state.get("urls"))
+            final_state.get("final_recipe", "no recipe found.").url.extend(final_state.get("urls"))
             return final_state.get("final_recipe", "no recipe found.")
         except Exception as e:
             print(e)
             time.sleep(delay)
     return Recipe(title="dummy", serving_size=0, prep_time=0, cook_time=0, ingredients="dummy", instructions="dummy", url=[])
 
-# recipe = input("recipe: ")
-
 if __name__ == "__main__":
-    # r = input("Key in recipe: ")
-    # result = get_recipe(r)
-    # print(result)
-    result = get_nutrition("100g of steak")
+    r = input("Key in recipe: ")
+    result = get_recipe(r)
     print(result)

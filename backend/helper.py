@@ -6,11 +6,21 @@ from typing import Annotated, Literal, List
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 from langchain.chat_models import init_chat_model
-from prompt import get_recipe
+# from prompt import get_recipe
 from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
 import asyncio
 from langgraph.graph import StateGraph, START, END
-from prompt import Recipe
+# from prompt import Recipe
+
+class Recipe(BaseModel):
+    title: str = Field(..., description="The title of the recipe. This title describes briefly what food the user will make by following the recipe.")
+    serving_size: int = Field(..., description="The number of people that the cooked meal can feed.")
+    prep_time: int = Field(..., description="The amount of time, in minutes, required to prepare the ingredients before cooking this meal. This includes but is not limited to time spent peeling, chopping and washing ingredients.")
+    cook_time: int = Field(..., description="The amount of time, in minutes, required to cook this meal. This is the total amount of time to follow the instructions given in the recipe, subtracted by the prep_time")
+    ingredients: str = Field(..., description="A detailed description of the required ingredients. Provide the required quantities of each ingredient, in UK measurements such as kg and ml.")
+    instructions: str = Field(..., description="Provide detailed instructions that are easy to follow by users regardless of their culinary background. When using heat, specify if the heat is low, medium or high. Illustrate with words how each step should be carried out."\
+                              "Each step should begin with an integer followed by a period, indicating the step number.")
+    url: List[str] = Field(..., description="Referenced urls in the creation of the recipe.")
 
 # Get the directory where this script resides
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -82,23 +92,23 @@ def GenerateInitialMealPlan(state: State):
     dummy_recipe = Recipe(title="dummy", serving_size=0, prep_time=0, cook_time=0, ingredients="dummy", 
                           instructions="dummy", url=[])
     
-    recipes = [get_recipe(result.meals[0]),
-               dummy_recipe, 
-               dummy_recipe, 
-               dummy_recipe, 
-               dummy_recipe,
-               dummy_recipe,
-               dummy_recipe]
+    # recipes = [get_recipe(result.meals[0]),
+    #            dummy_recipe, 
+    #            dummy_recipe, 
+    #            dummy_recipe, 
+    #            dummy_recipe,
+    #            dummy_recipe,
+    #            dummy_recipe]
 
-    meal_plan = MealPlan(Monday=recipes[0],
-                         Tuesday=recipes[1],
-                         Wednesday=recipes[2],
-                         Thursday=recipes[3],
-                         Friday=recipes[4],
-                         Saturday=recipes[5],
-                         Sunday=recipes[6])
+    # meal_plan = MealPlan(Monday=recipes[0],
+    #                      Tuesday=recipes[1],
+    #                      Wednesday=recipes[2],
+    #                      Thursday=recipes[3],
+    #                      Friday=recipes[4],
+    #                      Saturday=recipes[5],
+    #                      Sunday=recipes[6])
 
-    return {"meal_plan": meal_plan}
+    return {"meal_plan": dummy_recipe}
 
 graph_builder = StateGraph(State)
 graph_builder.add_node("generate", GenerateInitialMealPlan)

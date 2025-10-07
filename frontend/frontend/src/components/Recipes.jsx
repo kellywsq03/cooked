@@ -4,13 +4,17 @@ import CreateRecipeForm from './CreateRecipeForm.jsx';
 
 const Recipe = () => {
     const [recipeData, setRecipeData] = useState(null)
+    const [isSearching, setIsSearching] = useState(false)
 
   const createRecipe = async (recipeName) => {
     try {
+        setIsSearching(true);
         const response = await api.post('/', {"recipe": recipeName });
         setRecipeData(response.data.result);
+        setIsSearching(false);
     } catch (error) {
       console.error("Error getting recipe", error);
+      setIsSearching(false);
     }
   };
 
@@ -18,6 +22,12 @@ const Recipe = () => {
     <div>
       <h2>Create a recipe!</h2>
       <CreateRecipeForm createRecipe={createRecipe} />
+      {isSearching && 
+      <div className="flex items-center space-x-2 mt-3">
+          <div className="animate-spin rounded-full h-6 w-6 border-4 border-blue-500 border-b-transparent" />
+          <span>Indexing in progress...</span>
+      </div>
+      }
       {recipeData && (
         <div style={{ marginTop: "2rem" }}>
           <h3>{recipeData.title}</h3>
