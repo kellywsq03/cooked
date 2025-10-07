@@ -33,7 +33,6 @@ class State(TypedDict):
     feedback: str
     satisfactory: str
     final_recipe: dict
-    user_profile: UserProfile
     search_results: list
     loop_count: int = 0
     urls: list
@@ -262,7 +261,6 @@ def get_recipe(recipe: str) -> Recipe:
             user_input = f"Give me the recipe for {recipe}"
             final_state = graph.invoke({
                 "messages": [{"role": "user", "content": user_input}],
-                "user_profile": sample_user_profile,
                 "loop_count": 0,
                 "urls": []
             })
