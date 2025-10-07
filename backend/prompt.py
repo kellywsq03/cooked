@@ -272,7 +272,42 @@ def get_recipe(recipe: str) -> Recipe:
         except Exception as e:
             print(e)
             time.sleep(delay)
-    return Recipe(title="dummy", serving_size=0, prep_time=0, cook_time=0, ingredients="dummy", instructions="dummy", url=[])
+    return Recipe(
+        title="Orange Chicken",
+        serving_size=4,
+        prep_time=20,
+        cook_time=25,
+        ingredients="""
+            - 500g boneless, skinless chicken thighs, cut into bite-sized pieces
+            - 1/2 cup cornstarch
+            - 1/4 teaspoon salt
+            - 1/4 teaspoon black pepper
+            - 2 eggs, beaten
+            - 1/4 cup vegetable oil (for frying)
+            - 1/2 cup orange juice, freshly squeezed
+            - 3 tablespoons soy sauce
+            - 2 tablespoons rice vinegar
+            - 3 tablespoons sugar
+            - 1 teaspoon grated fresh ginger
+            - 2 cloves garlic, minced
+            - 1 teaspoon cornstarch mixed with 2 tablespoons water (slurry)
+            - Zest of 1 orange
+            - 2 green onions, chopped (for garnish)
+        """,
+        instructions = """
+            1. Season chicken with salt and pepper. Coat each piece lightly with cornstarch.
+            2. Dip chicken pieces into beaten eggs, then coat again with cornstarch.
+            3. Heat oil in a large pan over medium-high heat. Fry chicken in batches until golden brown and cooked through, 4-5 minutes per batch. Drain on paper towels.
+            4. In a separate saucepan, combine orange juice, soy sauce, rice vinegar, sugar, ginger, and garlic. Bring to a simmer over medium heat.
+            5. Stir in cornstarch slurry and cook until sauce thickens, about 2-3 minutes.
+            6. Add fried chicken to the sauce and toss to coat evenly.
+            7. Garnish with orange zest and chopped green onions. Serve hot with steamed rice.
+        """,
+        url=[
+            "https://www.modernhoney.com/chinese-orange-chicken/",
+            "https://www.simplyrecipes.com/recipes/chinese_orange_chicken/"
+        ]
+    )
 
 if __name__ == "__main__":
     r = input("Key in recipe: ")
