@@ -36,7 +36,9 @@ This is what cooked looks like behind the hood:
     pip install -r requirements.txt
     ```
 
-3. Run the frontend
+3. Add private keys to a ```.env``` file in ```/backend```
+
+4. Run the frontend
     ```bash
     cd frontend
     cd frontend
