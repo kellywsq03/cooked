@@ -34,7 +34,7 @@ class State(TypedDict):
     satisfactory: str
     final_recipe: dict
     user_profile: UserProfile
-    search_results: dict
+    search_results: list
     loop_count: int = 0
     urls: list
 
@@ -49,34 +49,39 @@ class Links(BaseModel):
 
 def research(state: State):
     print("Researching... ")
+
     system_msg = "You are a helpful assistant that will come up with relevant search queries " \
         "for a search engine. These search queries must be for recipes that another llm " \
         "will reference in the creation of a recipe that meets the user's needs. "
     research_llm = llm.with_structured_output(Links)
-    if state.get("feedback"):
+    
+    if state.get("feedback"): # Add feedback from research evaluator
         print(state["feedback"])
         result = research_llm.invoke(state["messages"] + 
                                      [SystemMessage(system_msg), 
                                       HumanMessage(state.get("feedback"))])
     else:
         result = research_llm.invoke(state["messages"] + [SystemMessage(system_msg)])
+    print("query result: ", file=write_file)
+    print(result.queries, file=write_file)
+
     search_tool = TavilySearch(max_results=3)
     search_results = []
     acc_urls = []
-    print("query result: ", file=write_file)
-    print(result.queries, file=write_file)
-    for q in result.queries:
+    
+    for q in result.queries: # Search all suggested queries
         search_result = search_tool.invoke({"query": q})
+        print("search_result", search_result)
         acc_urls.append(search_result["results"][0]["url"])
-        search_results.append(search_result)
-    print("urls", state["urls"])
-    print("acc urls", acc_urls)
+        search_results.append(search_result["results"][0])
+        
     print("done searching!")
-    print("search_results", search_results[0]["results"][0])
     print("search results", file=write_file)
     print(search_results, file=write_file)
-    acc_urls.extend(state["urls"])
-    return {"search_results": search_results[0]["results"][0],
+
+    acc_urls.extend(state["urls"]) # Accumulate sources
+
+    return {"search_results": search_results,
             "urls": acc_urls}
 
 class Feedback(BaseModel):
@@ -87,7 +92,6 @@ class Feedback(BaseModel):
     feedback: str = Field(
         description="If the recipes are insufficient, suggest what search queries to use.",
     )
-    # urls: list[str] = Field(..., description="A list of urls to visit.")
 
 def research_evaluator(state: State):
     print("evaluating...")
@@ -95,19 +99,25 @@ def research_evaluator(state: State):
         state["loop_count"] = 0
         return {"sufficient_info": "Sufficient",
             "feedback": ""}
-    system_msg = "You are a helpful assistant that will evaluate if the current recipes provide sufficient information to help another " \
-        "large language model to create a recipe. The recipe should be detailed, containing measurements and descriptions of the food " \
-        "at each instruction step whereever possible. "
+    
+    system_msg = "You are a culinary quality evaluator. Your job is to assess if the collected online recipes "\
+        "are sufficiently detailed to construct a high-quality final recipe. "\
+        "\nConsider the following:\n"\
+        "1. Are there clear ingredient quantities (in grams, ml, tsp, etc.)?\n"\
+        "2. Do the instructions describe temperature, texture, and timing?\n"\
+        "3. Are multiple perspectives or variations included (not all the same)?\n"\
+        "4. Would a human cook feel confident following them?"\
+        "\n\nIf not, specify what new search queries would help."
     evaluator_llm = llm.with_structured_output(Feedback)
+    
     search_results_message = SystemMessage(
-        content=f"Here are the search results: {json.dumps(state["search_results"], indent=2)}")
-    print("Search_results_message: ", search_results_message)
-    print("search results message: ", file=write_file)
-    print(search_results_message, file=write_file)
+        content=f"Here are the search results: {''.join(json.dumps(state["search_results"]))}")
+    
     result = evaluator_llm.invoke(state["messages"] + [search_results_message] + 
                                   [SystemMessage(system_msg)])
     print("result", file=write_file)
     print(result, file=write_file)
+
     return {"sufficient_info": result.grade,
             "feedback": result.feedback,
             "loop_count": 0 if result.grade == "Sufficient" else state["loop_count"] + 1}
@@ -149,13 +159,16 @@ def create_recipe(state: State):
         "regarding how the user should handle the food. Include weight, time or size quantities as much as possible." \
         "In the referenced context, extract the urls."
     )
-    if state.get("feedback"):
+
+    if state.get("feedback"): # Add feedback from recipe evaluator
         full_context = state["messages"] + [system_msg] + [HumanMessage(f"Take into account this feedback: {state["feedback"]}")]
     else:
         full_context = state["messages"] + [system_msg]
     response = structured_llm.invoke(full_context)
+    
     print("Recipe resopnse: ", response)
     print(state["messages"] + [response], file=write_file)
+    
     return {"final_recipe": response}
 
 class RecipeFeedback(BaseModel):
@@ -176,6 +189,7 @@ def recipe_evaluator(state: State):
         state["loop_count"] = 0
         return {"satisfactory": "satisfactory",
             "feedback": ""}
+    
     system_msg = SystemMessage(
         "You are a helpful assistant that evaluates if the current recipe is satisfactory. A recipe is satisfactory if it: "\
         "1. Avoids user's allergies "\
@@ -183,12 +197,15 @@ def recipe_evaluator(state: State):
         "3. Is detailed in the instructions on how to prepare the food."\
         "4. Meets the user's nutritional needs"
     )
+    
     input = f"The current recipe is {state["final_recipe"]}"\
         f"The user's allergies are {','.join(state["user_profile"].allergies)}"\
         f"The user's nutritional needs are {','.join(state["user_profile"].nutrition)}"
     evaluator_llm = llm.with_structured_output(RecipeFeedback)
     response = evaluator_llm.invoke([system_msg, HumanMessage(input)])
+    
     print(response, file=write_file)
+    
     return {"satisfactory": response.grade,
             "feedback": response.feedback,
             "loop_count": 0 if response.grade == "satisfactory" else state["loop_count"] + 1}
